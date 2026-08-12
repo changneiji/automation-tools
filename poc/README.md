@@ -21,6 +21,30 @@ python3 -m pip install -r requirements.txt
 public-key path; otherwise the pure-python `ecdsa` fallback is used. Results are
 identical either way.
 
+## Unified single-file PoC (`bw_isaac_poc.py`)
+
+`bw_isaac_poc.py` is a self-contained entry point (a merge of the original lab
+script and this package) that produces the **real-world viability numbers** in
+one place:
+
+```bash
+# determinism + single-seed demo (golden asserts run unless --skip-assert)
+python3 bw_isaac_poc.py --seed 42
+
+# feasibility: real measured throughput + full 2**32 wall-clock extrapolation
+python3 bw_isaac_poc.py --skip-assert --benchmark --kind segwit_p2sh --bench-seeds 20000
+
+# end-to-end grind with REAL numbers (self-contained: builds a synthetic funded
+# set, then locates the planted funded wallets and reconstructs their keys)
+python3 bw_isaac_poc.py --skip-assert --make-synthetic --range 60000 \
+    --planted 3 --decoys 40000 --kinds segwit_p2sh --workers 4 --reveal
+
+# ...or grind against a funded-address file you supply (one address per line)
+python3 bw_isaac_poc.py --skip-assert --funded path/to/funded.txt --end 300000 --workers 8
+```
+
+The subcommand-style `demo.py` below exposes the same capabilities individually.
+
 ## Usage
 
 ```bash

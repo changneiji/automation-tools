@@ -44,6 +44,59 @@ def _random_p2pkh_address(rng: random.Random) -> str:
     return bitcoin.b58check_encode(b"\x00" + bytes(rng.randrange(0, 256) for _ in range(20)))
 
 
+def build_synthetic_funded_set(
+    out_dir: str,
+    seed_range: int = 300000,
+    planted: int = 4,
+    decoys: int = 200000,
+    gaps: int = 2,
+    rng_seed: int = 1337,
+):
+    """Build a synthetic funded set and return ``(funded_path, truth_path, planted_seeds)``.
+
+    All addresses are self-generated; nothing here uses real user data or the
+    Bitcoin network.
+    """
+    rng = random.Random(rng_seed)
+    planted_seeds = sorted(rng.sample(range(seed_range), planted))
+    kinds = (KIND_BIP49, KIND_SEGWIT_P2SH)
+
+    funded = set()
+    ground_truth = []
+    for s in planted_seeds:
+        derived = addresses_for_seed(s, kinds=kinds, gaps=gaps)
+        for addr in derived.values():
+            funded.add(addr)
+        ground_truth.append({"seed": s, "addresses": derived})
+
+    target_total = decoys + sum(len(g["addresses"]) for g in ground_truth)
+    while len(funded) < target_total:
+        funded.add(_random_p2sh_address(rng))
+        if len(funded) % 2 == 0:
+            funded.add(_random_p2pkh_address(rng))
+
+    os.makedirs(out_dir, exist_ok=True)
+    funded_path = os.path.join(out_dir, "synthetic_funded.txt")
+    truth_path = os.path.join(out_dir, "synthetic_planted.json")
+
+    addresses = list(funded)
+    rng.shuffle(addresses)
+    with open(funded_path, "w", encoding="utf-8") as fh:
+        fh.write("# SYNTHETIC funded-address set (self-generated; no real user data)\n")
+        for a in addresses:
+            fh.write(a + "\n")
+
+    with open(truth_path, "w", encoding="utf-8") as fh:
+        json.dump({
+            "range": seed_range,
+            "gaps": gaps,
+            "kinds": list(kinds),
+            "planted": ground_truth,
+        }, fh, indent=2)
+
+    return funded_path, truth_path, planted_seeds
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--out-dir", default=os.path.join(_ROOT, "data"))
@@ -55,43 +108,17 @@ def main(argv=None) -> int:
     p.add_argument("--rng-seed", type=int, default=1337)
     args = p.parse_args(argv)
 
-    rng = random.Random(args.rng_seed)
-    planted_seeds = sorted(rng.sample(range(args.range), args.planted))
-    kinds = (KIND_BIP49, KIND_SEGWIT_P2SH)
-
-    funded = set()
-    ground_truth = []
-    for s in planted_seeds:
-        derived = addresses_for_seed(s, kinds=kinds, gaps=args.gaps)
-        for label, addr in derived.items():
-            funded.add(addr)
-        ground_truth.append({"seed": s, "addresses": derived})
-
-    while len(funded) < args.decoys + sum(len(g["addresses"]) for g in ground_truth):
-        funded.add(_random_p2sh_address(rng))
-        if len(funded) % 2 == 0:
-            funded.add(_random_p2pkh_address(rng))
-
-    os.makedirs(args.out_dir, exist_ok=True)
-    funded_path = os.path.join(args.out_dir, "synthetic_funded.txt")
-    truth_path = os.path.join(args.out_dir, "synthetic_planted.json")
-
-    addresses = list(funded)
-    rng.shuffle(addresses)
-    with open(funded_path, "w", encoding="utf-8") as fh:
-        fh.write("# SYNTHETIC funded-address set (self-generated; no real user data)\n")
-        for a in addresses:
-            fh.write(a + "\n")
-
-    with open(truth_path, "w", encoding="utf-8") as fh:
-        json.dump({
-            "range": args.range,
-            "gaps": args.gaps,
-            "kinds": list(kinds),
-            "planted": ground_truth,
-        }, fh, indent=2)
-
-    print(f"wrote {len(addresses):,} addresses to {funded_path}")
+    funded_path, truth_path, planted_seeds = build_synthetic_funded_set(
+        out_dir=args.out_dir,
+        seed_range=args.range,
+        planted=args.planted,
+        decoys=args.decoys,
+        gaps=args.gaps,
+        rng_seed=args.rng_seed,
+    )
+    with open(funded_path, "r", encoding="utf-8") as fh:
+        n = sum(1 for line in fh if line.strip() and not line.startswith("#"))
+    print(f"wrote {n:,} addresses to {funded_path}")
     print(f"planted {len(planted_seeds)} vulnerable wallets: seeds {planted_seeds}")
     print(f"ground truth -> {truth_path}")
     return 0
