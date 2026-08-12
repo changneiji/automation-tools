@@ -3,3 +3,8 @@ __pycache__/
 .pytest_cache/
 *.egg-info/
 .venv/
+
+# Generated synthetic funded sets and grind checkpoints/hits (regenerate locally).
+poc/data/
+**/hits.jsonl
+**/progress.json

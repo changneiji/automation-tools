@@ -36,7 +36,24 @@ python3 demo.py recover --kind bip49 --range 20000
 
 # 4) Cost extrapolation — throughput vs the full 2**32 space.
 python3 demo.py benchmark --kind segwit_p2sh --seeds 20000
+
+# 5) Full-space grind — locate "previously funded" seeds via funded-set
+#    intersection. Demonstrated ONLY against a synthetic, self-owned set.
+python3 tools/make_synthetic_funded_set.py --range 60000 --planted 3 --decoys 40000
+python3 demo.py grind --funded data/synthetic_funded.txt --end 60000 \
+    --kinds segwit_p2sh --workers 4 --reveal \
+    --expect-planted data/synthetic_planted.json
 ```
+
+### Scope of the grind
+
+The grind engine intersects derived addresses with a funded-address file and is
+demonstrated **only** against a synthetic set of locally generated, self-owned
+addresses. It does not fetch blockchain data. Producing the seeds/private keys of
+real third-party wallets from real funded data is out of scope regardless of
+current balance — see [`../docs/EXPLOIT.md`](../docs/EXPLOIT.md) §6.3. Note that
+the source research's own full-space funded grind returned **zero** hits, so
+"funded seeds exist to be located" should not be assumed.
 
 ## Tests
 
@@ -57,9 +74,12 @@ poc/
     isaac.py      faithful isaac@0.0.5 port
     create.py     BlueWallet v3.0.0 CREATE chains
     bitcoin.py    secp256k1 / Base58Check / BIP32 / BIP49 / addresses
-    attack.py     seed enumeration + benchmark
-  demo.py         CLI
-  tests/          golden-vector + parity + recovery tests
+    attack.py     seed enumeration + recovery + benchmark
+    grind.py      resumable full-space funded-set intersection
+  tools/
+    make_synthetic_funded_set.py   synthetic (self-owned) funded set generator
+  demo.py         CLI (vectors / wallet / recover / benchmark / grind / reveal)
+  tests/          golden-vector + parity + recovery + grind tests
 ```
 
 ## Address-kind → CREATE-path map (Era A)
