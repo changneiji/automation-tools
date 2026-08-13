@@ -5,7 +5,7 @@
 reviewed from the earliest 2018 releases to HEAD `f7b84e0c` (2026-06-28).
 **Scope:** the weak-PRNG key-generation class from `CASE_STUDY_WEAK_RNG.md`
 (CWE-338 / CWE-331). Read-only review of public source + git history. The iOS
-repo was **not** covered here.
+app (`alpha-wallet-ios`) is covered in §6.
 **Verdict:** **No weakness found.** Across every era, wallet key/seed material is
 produced by an OS-backed CSPRNG.
 
@@ -74,5 +74,23 @@ wallet-core, `SecureRandom`+web3j) draw wallet secrets from OS CSPRNGs, and it
 sidestepped the wallet-core Wasm CVE by using the native build. Like Electrum,
 this is a clean contrast case to BlueWallet Era A.
 
-*Reviewed read-only against public source and git history (Android repo only);
+## 6. iOS app (`alpha-wallet-ios`) — also clean
+
+Reviewed HEAD (`e4e5cc89`, 2024-07) and the earliest 2018 tag (`v1.0.2`).
+
+- **Key/seed generation** goes through Trust Wallet Core's native `HDWallet`:
+  `EtherKeystore.functional.generateMnemonic` → `HDWallet(strength: 128, passphrase:)`
+  (`modules/AlphaWalletFoundation/.../KeyManagement/EtherKeystore.swift`). As on
+  Android, this is the **native** wallet-core build (secure RNG), not the Wasm
+  build affected by CVE-2023-31290.
+- **2018 baseline (`v1.0.2`):** built on TrustCore; `PasswordGenerator` uses
+  `SecRandomCopyBytes(kSecRandomDefault, ...)` (Apple CSPRNG). No weak RNG in the
+  key path.
+- `Int.random(in:)` appears only in non-secret paths (network retry backoff,
+  synthetic activity IDs); Swift's default `SystemRandomNumberGenerator` is a
+  CSPRNG regardless.
+
+**iOS verdict:** clean, consistent with the Android result.
+
+*Reviewed read-only against public source and git history (Android + iOS repos);
 no wallets, keys, or funds were targeted.*
