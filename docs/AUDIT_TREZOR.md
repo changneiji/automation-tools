@@ -77,16 +77,18 @@ generator exists anywhere in the key-generation path.
 
 Trezor represents the strongest end of the spectrum in this study:
 
-| Property | BlueWallet ≤ v3.0.0 | Electrum / AlphaWallet | **Trezor** |
-|----------|---------------------|------------------------|------------|
-| Entropy source | `isaac` seeded by `Math.random` | OS CSPRNG (`secrets`/`SecureRandom`/`crypto/rand`) | **hardware TRNG + secure element** |
-| Host-entropy mixing | none | none | **yes (SHA256(int ‖ ext))** |
-| Anti-bias commitment | none | n/a | **yes (HMAC commitment)** |
-| Fail behavior | silently weak | n/a | **halts on RNG failure** |
-| Enumerable seed space | **2³²** | no (~2¹²⁸⁺) | **no (physical entropy)** |
+| Property | BlueWallet ≤ v3.0.0 | Electrum / AlphaWallet | Coldcard 4.0.x (Mk2/Mk3) | **Trezor** |
+|----------|---------------------|------------------------|--------------------------|------------|
+| Entropy source | `isaac` seeded by `Math.random` | OS CSPRNG (`secrets`/`SecureRandom`/`crypto/rand`) | intended HW TRNG; **linked Yasmarang** | **hardware TRNG + secure element** |
+| Host-entropy mixing | none | none | dice rolls (optional; saved some users) | **yes (SHA256(int ‖ ext))** |
+| Anti-bias commitment | none | n/a | none | **yes (HMAC commitment)** |
+| Fail behavior | silently weak | n/a | **silent link of software PRNG** | **halts on RNG failure** |
+| Enumerable seed space | **2³²** | no (~2¹²⁸⁺) | **~2³² (exploited 2026)** | **no (physical entropy)** |
 
-This is the design a fixed wallet should aspire to, and a clean contrast to the
-BlueWallet Era-A failure.
+Trezor is the design a fixed wallet should aspire to. Coldcard *intended* the
+same hardware-TRNG model but a 2021 build-guard defect silently swapped in a
+software PRNG for five years (see `AUDIT_COLDCARD.md`) — proof that hardware
+wallets are only as safe as their RNG *integration*.
 
 *Reviewed read-only against public source; no wallets, keys, or funds were
 targeted.*

@@ -1,92 +1,125 @@
 # Security Audit — Coldcard Firmware Entropy / Seed-Generation Path
 
-**Target:** `Coldcard/firmware` (Coinkite, open source) — HEAD `0e78b8e1`
-(2026-08-12); covers Mk3 (`COLDCARD`), Mk4 (`COLDCARD_MK4`), and Q1
-(`COLDCARD_Q1`). History from 2018-07.
+**Target:** `Coldcard/firmware` (Coinkite, open source) — Mk2, Mk3, Mk4, Mk5, Q.
 **Scope:** the weak-PRNG key-generation class from `CASE_STUDY_WEAK_RNG.md`
-(CWE-338 / CWE-331). Read-only review of public source.
-**Verdict:** **No weakness found — hardware-TRNG design.** Seed entropy comes
-from the MCU hardware RNG (fail-loud), whitened and optionally mixed with
-user-supplied dice entropy; the secure element's RNG is folded in as well. There
-is no software PRNG seed to enumerate, so the weak-PRNG class is architecturally
-impossible.
+(CWE-338 / CWE-331 / CWE-330).
+**Verdict:** **VULNERABLE (historically).** Coldcard firmware built from
+March 2021 onward shipped a build-integration defect that routed BIP39 seed
+generation through a **deterministic software PRNG (MicroPython "Yasmarang")**
+instead of the hardware TRNG — reducing effective entropy to ~2³² on Mk2/Mk3.
+Disclosed 2026-07-30 and **exploited in the wild** for large-scale theft.
 
-*Note:* the case-study writeup lists "Coldcard Yasmarang" as a distinct RNG. A
-full-repo search finds **no `yasmarang`** in current firmware; seed generation
-uses the STM32 TRNG + SHA-256d (see below).
+> ## Correction notice
+> An earlier version of this document concluded Coldcard was "clean". **That
+> conclusion was wrong.** It was produced by reading only the current
+> (post-fix) `shared/seed.py` and the current C RNG guard, and by grepping the
+> *current* tree for `yasmarang` (found none, because the fix excludes it).
+> That methodology missed the real defect because the bug was **not in the
+> Python seed code** — `generate_seed()` correctly calls `ngu.random.bytes(32)`
+> — but in the **build configuration and link-time symbol resolution**. This is
+> exactly the failure mode discussed in §4, and a direct lesson for the audit
+> methodology: source-reading the wallet layer is insufficient; you must verify
+> which RNG symbol the binary actually links.
 
 ---
 
-## 1. Seed generation (`shared/seed.py`)
+## 1. The vulnerability (CVE-class: weak PRNG for key generation)
+
+- **Introduced:** commit `b18723dd` ("First pass w/ libNgU", 2021-03-01),
+  shipping in firmware **4.0.x**. Seed generation moved from `ckcc.rng_bytes()`
+  (Coldcard's hardware-TRNG wrapper) to `ngu.random.bytes()`.
+- **Root cause (build/link defect):** libNgU's `ngu.random` resolves the symbol
+  `rng_get()`. Coldcard's board config guards its hardware RNG with
+  `MICROPY_HW_ENABLE_RNG`, and the guard checked whether the macro was
+  **defined**, not whether it was **non-zero**. In every board's
+  `stm32/*/mpconfigboard.h` the macro is `#define MICROPY_HW_ENABLE_RNG (0)`
+  (verified in-repo). So the build silently linked `rng_get()` to **MicroPython's
+  `Yasmarang` software PRNG fallback**, seeded only from **non-secret device
+  state (MCU UID + timer/clock registers)** — not the hardware TRNG.
+- **Effect:** the seed becomes a deterministic function of predictable state:
+  - **Mk2 / Mk3 (v4.0.x – 4.1.9):** no cryptographic reseed → effectively a
+    single **~2³²** space (on some devices the UID/SysTick/RTC state is nearly
+    fixed, collapsing it further). Offline-enumerable from any funded address.
+  - **Mk4 / Q / Mk5:** boot adds secure-element entropy but hashes it down to a
+    32-bit reseed word → at most **~2³²–2⁷³** distinguishable streams.
+- **Not visible in the Python layer:** `shared/seed.py :: generate_seed()` reads
+  correctly (`ngu.random.bytes(32)` → `sha256d`). The weakness was entirely in
+  which `rng_get()` the linker bound.
+
+## 2. Real-world impact
+
+- **Disclosed:** 2026-07-30 by Coinkite; independent analysis by Block Engineering
+  ("Predictable RNG Fallback and 32-Bit Reseed in COLDCARD Firmware").
+- **Exploited in the wild:** multiple theft waves beginning 2026-07-30. On-chain
+  analysis (Galaxy Research, via press) reported roughly **1,367 BTC (~$89M)**
+  drained from **~4,585 addresses** by early August 2026, with figures still
+  moving; some trackers cited higher cross-wave totals.
+- **Fix:** firmware **4.2.0** corrects Mk2/Mk3 seed generation; current builds add
+  an explicit RNG **symbol check** — the build now fails unless the board RNG
+  object defines `rng_get()` and the upstream fallback object defines **no**
+  symbols. Seeds already generated on affected firmware are **not** repaired by
+  updating; users must migrate to a freshly generated seed.
+- **Mitigations that saved users:** ≥50 independent private **dice rolls** at
+  seed creation (user-supplied entropy, SHA-256-mixed) or a strong, unique
+  **BIP-39 passphrase**.
+
+## 3. What the current (fixed) code looks like
 
 ```python
+# shared/seed.py (post-fix) — source unchanged; the fix was in the build/link
 def generate_seed():
-    seed = ngu.random.bytes(32)          # 32 bytes from the hardware TRNG
-    assert len(set(seed)) > 4            # detect a stuck/failed TRNG
-    return ngu.hash.sha256d(seed)        # double-SHA256 whitening to de-bias
+    seed = ngu.random.bytes(32)      # NOW actually the hardware TRNG
+    assert len(set(seed)) > 4
+    return ngu.hash.sha256d(seed)
 ```
 
-- Default new-wallet entropy is 32 bytes from the **hardware TRNG**, sanity-checked
-  for a stuck source, then SHA-256d whitened.
-- **Optional user entropy — dice rolls** (`add_dice_rolls`): each D6 roll is
-  folded in with SHA-256 (`md = sha256(seed)`, `md.update(ch)`, `seed = md.digest()`),
-  and the UI warns about low entropy if too few rolls. This lets a distrustful
-  user supply their own entropy — the analogue of Trezor's host-entropy mixing.
-
-## 2. The hardware RNG (`stm32/COLDCARD_Q1/rng.c`), fail-loud
-
-`ngu.random.bytes` / `ckcc.rng_bytes` are backed by `random_buffer`, which reads
-the **STM32 hardware RNG peripheral** (`RNG->DR`) with defensive checks:
-
-- Seed-error flags (`SEIS`/`SECS`) are polled; on error it recovers or bails.
-- A stuck source is caught: a zero word, or a word identical to the previous one,
-  is rejected.
-- After bounded retries, persistent failure **raises `OSError`** rather than
-  returning suspect randomness — no silent fallback (the header note even calls
-  the Q1 variant "more paranoid").
-
-```c
-uint32_t next = rng_get_or_fault();      // STM32 TRNG or fault
-if (next == last) mp_raise_OSError(MP_EEXIST);   // stuck-RNG guard
+```makefile
+# stm32/COLDCARD_MK4/mpconfigboard.mk (fix): do NOT compile MicroPython's PRNG;
+# board rng.c provides rng_get(); empty object satisfies the linker.
+$(BUILD)/rng.o: CFLAGS += -Dpyb_rng_...=error-...-this
 ```
 
-## 3. Secure-element entropy is also folded in
+Pre-4.0 firmware (Mk2/Mk3 through v3.2.2) used the direct STM32 hardware RNG and
+is **not** in the regression window; Mk1 predates it entirely.
 
-`shared/mk4.py` reseeds the userspace convenience PRNG from **two hardware
-sources** combined:
+## 4. Why the first audit missed it — methodology lesson
 
-```python
-a = ... # MCU TRNG
-b = callgate.read_rng(2)                 # SE2 (second secure element) RNG
-n = ngu.hash.sha256d(a + b)              # mix MCU + secure element
-ngu.random.reseed(n)
-```
+This is the single most important takeaway for the case study:
 
-(`ngu.random.uniform()` — the reseedable PRNG — is used only for non-secret
-purposes: USB timing jitter, menu selection, nonces. Key/seed material uses
-`ngu.random.bytes()`, i.e. the raw TRNG.)
+- The Python wallet code was **correct**. The defect lived in a C preprocessor
+  guard (`#if defined` vs `#if (value)`) plus **link-time symbol resolution**,
+  so a review of `seed.py`/`rng.c` at HEAD looked clean.
+- Grepping the *current* tree for `yasmarang` returns nothing **because the fix
+  removed the fallback** — a post-fix snapshot cannot reveal a historical build
+  defect.
+- Even Coinkite reported running a leading AI model over the firmware weeks
+  before the theft; it did not find the bug. An independent developer found it
+  by pointing an AI assistant at the repo. The lesson is not "AI can't audit" —
+  it's that **RNG integration must be verified at the binary/symbol and on-device
+  level**, not just by reading source: confirm which `rng_get()` is linked, test
+  that generated seeds actually vary with hardware entropy, and treat build
+  macros in the key path as security-critical.
 
-## 4. Historical consistency (2018 → present)
+## 5. Placement in the study — a direct parallel to BlueWallet
 
-The earliest `rng.c` (commit `9f04ac1b`, 2018-07-24) already read the STM32
-hardware RNG (`RNG->DR`, `RNG_CR_RNGEN`, `random_buffer`). The design has been
-TRNG-based since inception; later Mk4/Q1 revisions only hardened the failure
-handling (stuck-output detection, fail-loud). No weak/seeded software PRNG ever
-sat in the key-generation path.
+Coldcard's 2021–2026 flaw is the **same vulnerability class as the BlueWallet
+ISAAC bug**, and it is literally the **"Yasmarang"** generator the case-study
+writeup name-dropped:
 
-## 5. Conclusion & placement in the study
+| | BlueWallet ≤ v3.0.0 | **Coldcard 4.0.x–4.1.9 (Mk2/Mk3)** |
+|---|---------------------|-------------------------------------|
+| PRNG | `isaac` seeded by `Math.random` | MicroPython **Yasmarang** |
+| Seeded from | ~32-bit `Math.random` | MCU UID + timer/clock (non-secret) |
+| Effective entropy | ~2³² | ~2³² (or less) |
+| Recover from | any address | any address |
+| Exploited in the wild | none confirmed | **yes (~$89M+, Jul–Aug 2026)** |
+| Root cause locus | wrong RNG chosen in code | wrong RNG linked via build guard |
 
-Coldcard, like Trezor, sits at the strong end of the spectrum:
+**Corrected spectrum:** hardware wallets are only as safe as their RNG
+*integration*. Trezor (audited) mixes HW TRNG + secure element + host entropy and
+fails loud; Coldcard *intended* the same but a build guard silently swapped in a
+software PRNG for five years. This is a stronger case-study finding than a clean
+result: a top-tier hardware wallet fell to the very class this project is about.
 
-| Property | BlueWallet ≤ v3.0.0 | Electrum / AlphaWallet | Trezor | **Coldcard** |
-|----------|---------------------|------------------------|--------|--------------|
-| Entropy source | `isaac`←`Math.random` | OS CSPRNG | HW TRNG + SE | **HW TRNG + SE** |
-| User/host entropy mixing | none | none | host entropy | **dice rolls (opt.)** |
-| Whitening | cosmetic (adds nothing) | n/a | SHA/HMAC | **SHA-256d** |
-| Fail behavior | silently weak | n/a | halts | **raises OSError** |
-| Enumerable seed space | **2³²** | no | no | **no (physical entropy)** |
-
-A clean, reference-grade contrast to the BlueWallet Era-A failure.
-
-*Reviewed read-only against public source and git history; no wallets, keys, or
-funds were targeted.*
+*Reviewed read-only against public source, git history, and public disclosures;
+no wallets, keys, or funds were targeted.*

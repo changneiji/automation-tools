@@ -47,6 +47,7 @@ entropy), CWE-330/334 (small space of random values).
 | **Cake Wallet** | older versions (Electrum seed) | Dart `Random()` (non-secure, time/zero seed) | weak | address | pre-2021 | vendor-disclosed | patched May 2021 |
 | **Ill Bloom** | crypto-js `WordArray.random()` 3.1.2-4 → 3.x (≠ 3.2.0/3.2.1) | custom MWC PRNG seeded from `Math.random` | ~2³⁹ (128-bit) / ~2⁴⁷ (256-bit) | any address | 2014 → **2026** | disclosed 2026 | fixed 4.0.0 · CVE-2026-71851 |
 | **bip3x** | library, Windows build | `mt19937` seeded by system time (PCG elsewhere) | 2³² (Windows) | any address | — | contributory | use CSPRNG |
+| **Coldcard** (Yasmarang) | Coldcard fw 4.0.x–4.1.9 (Mk2/Mk3); weaker on Mk4/Q/Mk5 | build guard tested `#if defined` not value → linked MicroPython **Yasmarang** software PRNG (seeded from MCU UID + timer) instead of HW TRNG | ~2³² (Mk2/Mk3); ~2³²–2⁷³ (Mk4/Q/Mk5) | any address | 2021–2026 | **yes (~$89M+, Jul–Aug 2026)** | fw 4.2.0 + RNG symbol check; `AUDIT_COLDCARD.md` |
 
 **Observation:** the class spans **2011 → 2026** and touches browser wallets,
 mobile wallets, CLI tools, vanity generators, and general crypto libraries. It
@@ -62,11 +63,13 @@ is not a solved historical problem — the crypto-js "Ill Bloom" case
   JSBN-fallback / LCG variants above. No public CVE/disclosure ties `isaac` to
   wallet key generation elsewhere — so it is a *previously undocumented instance*
   of a known class.
-- **Contrast in impact.** Randstorm, Milk Sad, Trust Wallet, and Profanity were
-  exploited in the wild for real losses; the available BlueWallet-ISAAC research
-  reports **zero** on-chain funded hits. This is an important, honest distinction
-  for a case study: *cryptographically exploitable ≠ demonstrated real-world
-  victims*. The value is the mechanism and the near-miss, not a theft.
+- **Contrast in impact.** Randstorm, Milk Sad, Trust Wallet, Profanity, and
+  Coldcard (Yasmarang, 2021–2026) were exploited in the wild for real losses;
+  the available BlueWallet-ISAAC research reports **zero** on-chain funded hits.
+  This is an important, honest distinction for a case study:
+  *cryptographically exploitable ≠ demonstrated real-world victims*. The value
+  of BlueWallet-ISAAC is the mechanism and the near-miss; Coldcard is the
+  same class with confirmed theft (~$89M+, Jul–Aug 2026).
 
 ---
 
@@ -88,6 +91,12 @@ material. Red-flag patterns to grep for in wallet-adjacent code:
 - Go/Python: `math/rand`, Python `random` module used for keys.
 - Seeding smells: seeding with `Date.now()` / `time()` / a single 32-bit value;
   a `window.crypto`/`getrandom` presence check that can silently fall through.
+- **Build / link-time RNG resolution (the Coldcard lesson):** source that *calls*
+  a CSPRNG can still be wrong if the *symbol* that gets linked is a software
+  fallback. Verify `#if defined` vs `#if (value)` guards, confirm which
+  `rng_get()`/`random_buffer()` the binary actually binds, and fail the build
+  if a fallback PRNG object exports any symbols. Grepping a *post-fix* tree for
+  the fallback name will miss a historical defect that the fix already removed.
 
 **Behavioral indicators:** wallet generation that is reproducible given a
 timestamp; suspiciously fast/deterministic vanity generation; entropy that is
@@ -145,3 +154,6 @@ fine; deriving strangers' keys is not, regardless of the project's balance.
 - Trust Wallet: CVE-2023-31290 (Ledger Donjon), CVE-2024-23660 (NVD).
 - Profanity: 1inch blog; Halborn; SlowMist / BlockSec (Wintermute).
 - Ill Bloom: crypto-js GHSA-rg76-677x-56q9; CVE-2026-71851.
+- Coldcard Yasmarang: Coinkite disclosure 2026-07-30 and technical backgrounder;
+  Block Engineering "Predictable RNG Fallback and 32-Bit Reseed"; firmware
+  commit `b18723dd` (2021-03-01); `AUDIT_COLDCARD.md`.
