@@ -89,5 +89,39 @@ BlueWallet-ISAAC study — the same wallet category, doing entropy right:
 legitimate research outcome and demonstrates the methodology correctly
 distinguishes safe from unsafe entropy handling.
 
-*Reviewed read-only against public source; no wallets, keys, or funds were
-targeted.*
+---
+
+## 4. Historical audit (all releases 2018 → present)
+
+Traced the seed/key entropy source and the ECDSA signing nonce across Electrum's
+git history via release tags, from the earliest 2018 release to `4.8.1`. Two
+implementation eras, both cryptographically sound:
+
+| Era | Releases (year) | Seed / key entropy | Signing nonce |
+|-----|-----------------|--------------------|---------------|
+| `ecdsa`-library era | `3.0.4` … `3.3.x` (2018–2019), through early 4.x | `ecdsa.util.randrange(...)` — defaults to **`os.urandom`** (CSPRNG) | `SigningKey.sign_digest_deterministic` — **RFC 6979** |
+| `secrets` era | later 4.x … `4.8.1` (→2026) | `util.randrange` → **`secrets.randbelow`** (CSPRNG); ECC via `electrum_ecc`/libsecp256k1 | libsecp256k1 default **RFC 6979** |
+
+Evidence:
+
+- **`3.0.4` (Jan 2018)** — `lib/mnemonic.py::make_seed` and key generation use
+  `ecdsa.util.randrange(pow(2, n))`; `ecdsa.util.randrange` defaults its entropy
+  callable to `os.urandom` (verified from the `ecdsa` source). Signing:
+  `sign_digest_deterministic` (RFC 6979).
+- **`3.3.8` (2019)** — `electrum/ecc.py::ECPrivkey.generate_random_key` uses
+  `ecdsa.util.randrange(CURVE_ORDER)`; signing `sign_digest_deterministic`.
+- **`4.0.9`, `4.4.6`, `4.8.1`** — `make_seed` uses `randrange(pow(2, num_bits))`
+  backed by `secrets.randbelow`.
+- **Full-history check:** grepping the entire commit history of the seed file
+  (`electrum/mnemonic.py` and the old `lib/mnemonic.py`) for weak-RNG symbols
+  (`import random`, `random.*`, `mt19937`, `Math.random`, `time()`/`srand`
+  seeding) returns **nothing** — no weak entropy source ever existed in that path.
+
+**Conclusion:** across the entire 2018→2026 span, Electrum never exhibited the
+weak-PRNG key-generation flaw. Seeds and keys were always CSPRNG-sourced
+(`os.urandom` then `secrets`), and signatures always used RFC 6979 deterministic
+nonces. This is the opposite of the BlueWallet Era-A picture and reinforces the
+contrast in §3.
+
+*Reviewed read-only against public source and git history; no wallets, keys, or
+funds were targeted.*
