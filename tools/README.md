@@ -49,17 +49,52 @@ addresses were actually paid requires the wallet's extended public key (xpub /
 ypub / zpub) or records from whatever system issued the invoices. Use
 `xpub_reconcile.py` below for that.
 
+## Reconciling wallets you hold the seeds for
+
+If you have the seed phrases and need to know which addresses were actually
+used, run the two phases below. Seed phrases stay on the offline machine; only
+public keys cross the network.
+
+```bash
+# phase 1, OFFLINE on a trusted machine: seeds -> account public keys
+python3 tools/seed_to_xpub.py seeds.txt -o accounts.csv
+
+# phase 2, online: scan every derived account for activity
+python3 tools/xpub_reconcile.py --batch accounts.csv -o used.csv
+```
+
+`accounts.csv` contains no secrets, so it is safe to move to a networked
+machine. Scanning is fast — a few hundred addresses across several accounts
+completes in seconds — so there is no reason to review addresses by hand.
+
+## seed_to_xpub.py
+
+Phase one. Turns each seed phrase into account extended public keys for all
+three common address types (BIP44 `1...`, BIP49 `3...`, BIP84 `bc1...`), so the
+scan does not depend on knowing in advance which type a wallet issued. Makes no
+network calls whatsoever; run it offline.
+
+Input is one seed phrase per line, optionally prefixed with `label:` to carry a
+wallet name into the report. Use `--accounts N` to cover more than one account
+index per wallet. Seed phrases are never printed or written to the output.
+
+Seeds failing BIP39 checksum validation are reported by label and skipped. A
+checksum failure means the phrase is mistyped or its word order is wrong, so it
+is worth correcting rather than assuming the wallet is empty.
+
 ## xpub_reconcile.py
 
-Rebuilds a payment history when the local records are gone but the wallet is
-still available. Given an account extended **public** key, it re-derives the
-wallet's address sequence, checks each address against the chain, and reports
-which ones were actually used and what they received.
+Phase two, also usable on its own. Given an account extended **public** key, it
+re-derives the wallet's address sequence, checks each address against the chain,
+and reports which ones were used and what they received.
 
 Requires `bip_utils` (`pip install bip_utils`) for BIP32 derivation.
 
 ```bash
 python3 tools/xpub_reconcile.py ypub6Ww3ibx... -o used.csv
+
+# many accounts at once, from seed_to_xpub.py output or a list of keys
+python3 tools/xpub_reconcile.py --batch accounts.csv -o used.csv
 
 # force the address type when the key prefix is misleading
 python3 tools/xpub_reconcile.py xpub6C... --scheme bip49 --gap 50 -o used.csv
